@@ -9,14 +9,16 @@
 using namespace std;
 
 // --- pubkey send/recv (DER) ---
+// --- pubkey send/recv ---
 bool send_pubkey(int fd, EVP_PKEY* pkey) {
     int len = i2d_PUBKEY(pkey, nullptr);
     if (len <= 0) return false;
-    vector<unsigned char> buf(len);
-    unsigned char* p = buf.data();
-    i2d_PUBKEY(pkey, &p);
     uint32_t netlen = htonl(len);
-    if (!send_all(fd, &netlen, sizeof(netlen))) return false;
+
+    vector<unsigned char> buf(sizeof(int) + len); // the first 4 bytes store the length
+    memcpy(buf.data(), &netlen, sizeof(int)); // copy netlen
+    unsigned char* p = buf.data() + sizeof(int);
+    i2d_PUBKEY(pkey, &p);
     return send_all(fd, buf.data(), buf.size());
 }
 EVP_PKEY* recv_pubkey(int fd) {
