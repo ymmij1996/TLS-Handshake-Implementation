@@ -1,5 +1,5 @@
 # TLS-Handshake-Implementation
-* This project simulates TLS handshake using ECDHE key exchange and encrypt using AES-GCM afterward. Note that the CA certificate sent and verification part is completely skipped compared to the formal TLS handshake. 
+* This project simulates TLS handshake using ECDHE key exchange and encrypt using AES-GCM afterward. Note that the CA certificate sent and verification part is completely skipped compared to the formal TLS handshake for simplicity. 
 
 <h2> Testing Environment </h2>
 
@@ -45,14 +45,22 @@
   ~/TLS-Handshake-Implementation$ ./tls_server
   [Server] listening on port 5555
   [Server] client connected
-  [Server] derived secret (hkdf): 9f85cbb78514b178959c7c78e6f1862a14c06feeff6c72a06fb964882b829910
+  [Server] server key:  {32 bytes, hex: de72c6ddcce071f6bf9f8a42be6ac18789216598fa3dafc2ffb00ac0a2e65f32}
+  [Server] client key:  {32 bytes, hex: 0a7f7f18019f7d33610fd3ba5358e5acbcf3f41cac171c7b3058d2441c47e2c2}
   [Server] client says: READY
+  [Server] server sends: OK
+  [Server] server sends: something interesting but only you can know
+  [Server] client says: Got it.
   ```
   ```sh
   ~/TLS-Handshake-Implementation$ ./tls_client
   [Client] connected to server
-  [Client] derived secret (hkdf): 16014910e40f1a5c7f8d2364cc15d79d5efc9af02f1e539313af5561aef193b3
+  [Client] server key:  {32 bytes, hex: de72c6ddcce071f6bf9f8a42be6ac18789216598fa3dafc2ffb00ac0a2e65f32}
+  [Client] client key:  {32 bytes, hex: 0a7f7f18019f7d33610fd3ba5358e5acbcf3f41cac171c7b3058d2441c47e2c2}
+  [Client] client sends: READY
   [Client] server says: OK
+  [Client] server says: something interesting but only you can know
+  [Client] client sends: Got it.
   ```
 * optionally, we can use tcpdump before running the client and server probrams to dump the content of the packets
   ```sh
@@ -60,7 +68,10 @@
   ```
 <h2> Explanation </h2>
 
-* Wireshark Trace
+* Wireshark Trace. Packet numbers correspond to the captured tls.pcap file.
+
+<img width="2542" height="451" alt="image" src="https://github.com/user-attachments/assets/cfe7643f-fb95-4fc2-a6a6-4beb6ff0ca89" />
+
   ```sh
   Client                               Server
   |---- TCP 3-way handshake --------------->| Packets 1–3: TCP three-way handshake
@@ -69,7 +80,6 @@
   |---- "READY" (AES-GCM encrypted) ------->| Packet 8: Client sends "READY" encrypted with AES-GCM
   |<--- "OK"    (AES-GCM encrypted) --------| Packet 9: Server replies "OK" encrypted with AES-GCM
   ```
-<img width="2555" height="385" alt="image" src="https://github.com/user-attachments/assets/8fc6f87b-ec1b-4887-bb4b-8ca15ce88640" />
 
 * using wireshark to open tls.pcap we just recorded, we can observe that the first three packets are TCP three-way handshake by the server accepting and the client connecting on their sockets.
 
@@ -81,6 +91,11 @@
   ```
 
 * Afterward, the client sent the fourth packet to the server with its public key. The first 4 bytes represents the length of the client public key (DER-encoded key) followed by the key itself. The server sent Packet 6 to the client with its key length and public key as well and they both calculate the same secret (The Diffie-Hellman shared secret) which is passed through HKDF (RFC 5869). For Packet 8 and Packet 9, the server and the client were able to use AES-GCM to encrypt their message.
+
+* For generating a deterministic initialization vector (IV), the following formula is applied computing separately for each direction and message:
+  ```sh
+  IV = base_iv ⊕ sequence_number
+  ```
 
 <h2> Security Notes</h2>
 This project is "educational only":
