@@ -8,8 +8,16 @@
 
 using namespace std;
 
+ostream& operator<<(ostream& os, const vec_print& vec_print) {
+    os << vec_print.var <<" {" << vec_print.vec.size() << " bytes, hex: ";
+    for (size_t i = 0; i < vec_print.vec.size(); ++i) {
+        os << hex << setw(2) << setfill('0') << static_cast<int>(vec_print.vec[i]);
+    }
+    os << "}" << dec;
+    return os;
+}
+
 // --- pubkey send/recv (DER) ---
-// --- pubkey send/recv ---
 bool send_pubkey(int fd, EVP_PKEY* pkey) {
     int len = i2d_PUBKEY(pkey, nullptr);
     if (len <= 0) return false;
@@ -64,7 +72,7 @@ vector<unsigned char> sha256(const vector<unsigned char>& in) {
 
 // salt: vector of salt bytes (can be all zeros for first use)
 // input_key_material: shared_secret from ECDHE
-// info: optional context string (e.g., "TLS handshake key")
+// info: make sure client and server have different iv when use this to hash
 // length: desired output key length in bytes
 vector<unsigned char> hkdf_extract_and_expand(
     const vector<unsigned char>& salt,
@@ -105,6 +113,16 @@ vector<unsigned char> hkdf_extract_and_expand(
     return out_key;
 }
 
+// Construct per-record IV: base_iv XOR seq_num
+vector<unsigned char> make_record_iv(const vector<unsigned char>& base_iv, uint64_t seq_num) {
+    vector<unsigned char> iv(base_iv);
+    // XOR seq_num into the last 8 bytes (network byte order)
+    for (int i = 0; i < 8; i++) {
+        iv[GCM_IV_LEN - 1 - i] ^= (seq_num >> (8 * i)) & 0xFF;
+    }
+    return iv;
+}
+
 // --- socket utils ---
 bool send_all(int fd, const void* data, size_t len) {
     const unsigned char* p = (const unsigned char*)data;
@@ -132,8 +150,8 @@ bool aes_gcm_encrypt(const vector<unsigned char>& key,
                      vector<unsigned char>& tag) {
     EVP_CIPHER_CTX* ctx = EVP_CIPHER_CTX_new();
     if (!ctx) return false;
-    iv.resize(GCM_IV_LEN);
-    if (RAND_bytes(iv.data(), iv.size()) != 1) { EVP_CIPHER_CTX_free(ctx); return false; }
+    //iv.resize(GCM_IV_LEN);
+    //if (RAND_bytes(iv.data(), iv.size()) != 1) { EVP_CIPHER_CTX_free(ctx); return false; }
 
     if (EVP_EncryptInit_ex(ctx, EVP_aes_256_gcm(), NULL, NULL, NULL) != 1) { EVP_CIPHER_CTX_free(ctx); return false; }
     if (EVP_EncryptInit_ex(ctx, NULL, NULL, key.data(), iv.data()) != 1) { EVP_CIPHER_CTX_free(ctx); return false; }
@@ -148,6 +166,7 @@ bool aes_gcm_encrypt(const vector<unsigned char>& key,
 
     tag.resize(GCM_TAG_LEN);
     if (EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_GCM_GET_TAG, 16, tag.data()) != 1) { EVP_CIPHER_CTX_free(ctx); return false; }
+
     EVP_CIPHER_CTX_free(ctx);
     return true;
 }
@@ -158,31 +177,32 @@ bool aes_gcm_decrypt(const vector<unsigned char>& key,
                      const vector<unsigned char>& tag,
                      string& plaintext) {
     EVP_CIPHER_CTX* ctx = EVP_CIPHER_CTX_new();
-    if (!ctx) return false;
-    if (EVP_DecryptInit_ex(ctx, EVP_aes_256_gcm(), NULL, NULL, NULL) != 1) { EVP_CIPHER_CTX_free(ctx); return false; }
-    if (EVP_DecryptInit_ex(ctx, NULL, NULL, key.data(), iv.data()) != 1) { EVP_CIPHER_CTX_free(ctx); return false; }
+    if (!ctx) { throw runtime_error("EVP_CIPHER_CTX_new fail"); return false;}
+
+    if (EVP_DecryptInit_ex(ctx, EVP_aes_256_gcm(), NULL, NULL, NULL) != 1) { EVP_CIPHER_CTX_free(ctx); throw runtime_error("EVP_DecryptInit_ex failed"); return false; }
+    
+    if (EVP_DecryptInit_ex(ctx, NULL, NULL, key.data(), iv.data()) != 1) { EVP_CIPHER_CTX_free(ctx); throw runtime_error("EVP_DecryptInit_ex failed"); return false; }
 
     vector<unsigned char> out(ciphertext.size());
     int outlen = 0;
-    if (EVP_DecryptUpdate(ctx, out.data(), &outlen, ciphertext.data(), ciphertext.size()) != 1) { EVP_CIPHER_CTX_free(ctx); return false; }
 
-    if (EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_GCM_SET_TAG, tag.size(), (void*)tag.data()) != 1) { EVP_CIPHER_CTX_free(ctx); return false; }
+    if (EVP_DecryptUpdate(ctx, out.data(), &outlen, ciphertext.data(), ciphertext.size()) != 1) { EVP_CIPHER_CTX_free(ctx); throw runtime_error("EVP_DecryptUpdate failed"); return false; }
 
-    int ret = EVP_DecryptFinal_ex(ctx, out.data() + outlen, &outlen);
+    if (EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_GCM_SET_TAG, tag.size(), (void*)tag.data()) != 1) { EVP_CIPHER_CTX_free(ctx); throw runtime_error("EVP_CIPHER_CTX_ctrl failed"); return false; }
+
+    if (EVP_DecryptFinal_ex(ctx, out.data() + outlen, &outlen) != 1) { EVP_CIPHER_CTX_free(ctx); throw runtime_error("EVP_DecryptFinal_ex failed"); return false; }
+
     EVP_CIPHER_CTX_free(ctx);
-    if (ret <= 0) return false;
     plaintext.assign(out.begin(), out.end());
     return true;
 }
 
 // --- GCM packet send/recv ---
 bool send_gcm_packet(int fd,
-                     const vector<unsigned char>& iv,
                      const vector<unsigned char>& tag,
                      const vector<unsigned char>& ciphertext) {
-    uint32_t payload_len = (uint32_t)(iv.size() + ciphertext.size() + tag.size());
+    uint32_t payload_len = (uint32_t)(ciphertext.size() + tag.size());
     if (payload_len > 0xFFFF) return false; // TLS record length limit
-
     const unsigned char header[5] = {
         TLS_APPLICATION_DATA,
         (unsigned char)((TLS_VERSION >> 8) & 0xff),
@@ -194,17 +214,13 @@ bool send_gcm_packet(int fd,
     std::vector<uint8_t> record;
     record.reserve(sizeof(header) + payload_len); // avoid reallocations
     record.insert(record.end(), header, header + sizeof(header));
-    record.insert(record.end(), iv.begin(), iv.end());
     record.insert(record.end(), ciphertext.begin(), ciphertext.end());
     record.insert(record.end(), tag.begin(), tag.end());
-
     return send_all(fd, record.data(), record.size());
 }
 bool recv_gcm_packet(int fd,
-                     vector<unsigned char>& iv,
                      vector<unsigned char>& tag,
                      vector<unsigned char>& ciphertext,
-                     size_t iv_len,
                      size_t tag_len) {
     unsigned char header[5];
     if (!recv_all(fd, header, sizeof(header))) return false;
@@ -216,15 +232,14 @@ bool recv_gcm_packet(int fd,
     // Basic sanity checks
     if (content_type != TLS_APPLICATION_DATA) return false;
     if (version != TLS_VERSION) return false;
-    if (payload_len < iv_len + tag_len) return false;
+    if (payload_len < tag_len) return false;
 
     vector<unsigned char> payload(payload_len);
     if (!recv_all(fd, payload.data(), payload_len)) return false;
 
-    // Split into IV | ciphertext | tag
-    iv.assign(payload.begin(), payload.begin() + iv_len);
+    // Split into ciphertext | tag
+    ciphertext.assign(payload.begin(), payload.end() - tag_len);
     tag.assign(payload.end() - tag_len, payload.end());
-    ciphertext.assign(payload.begin() + iv_len, payload.end() - tag_len);
 
     return true;
 }
