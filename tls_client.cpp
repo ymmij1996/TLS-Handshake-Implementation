@@ -5,28 +5,38 @@
 #include <openssl/pem.h>
 #include <openssl/rand.h>
 #include <openssl/sha.h>
-#include <sys/socket.h>
 #include <unistd.h>
+#include <tss2/tss2_esys.h>
+#include <tss2/tss2_tctildr.h>
 
 #include <cstring>
 #include <iostream>
 #include <vector>
+#include <memory>
 
 #include "utility.h"
+#include "tls_impl.h"
 
 #define PORT 5555
 #define SERVER_IP "127.0.0.1"
 
 using namespace std;
 
-// --- main client flow ---
+
 int main() {
     OpenSSL_add_all_algorithms();
 
-    uint64_t server_seq = 0;
-    uint64_t client_seq = 0;
-    EVP_PKEY* client_key = NULL, *server_pub = NULL;
+    EVP_PKEY* client_key = NULL, *server_pub = NULL, *server_static_pub;
     int sock = -1;
+    string send_msg, recv_msg;
+    uint64_t server_seq = 0, client_seq = 0;
+    vector<X509*> certs;
+    
+    unique_ptr<X509_STORE, decltype(&X509_STORE_free)> global_trusted_store_ptr(X509_STORE_new(), X509_STORE_free);
+    X509* root = load_cert("root.crt");
+    X509_STORE_add_cert(global_trusted_store_ptr.get(), root);
+    X509_free(root);
+
     try {
         // 1) generate client key
         client_key = generate_ec_key();
@@ -46,60 +56,58 @@ int main() {
         if (!send_pubkey(sock, client_key)) throw runtime_error("send pubkey fail\n");
 
         // 5) receive server pubkey
-        server_pub = recv_pubkey(sock);
-        if (!server_pub) throw runtime_error("recv server pubkey fail\n");
+        //server_pub = recv_pubkey(sock);
+        //if (!server_pub) throw runtime_error("recv server pubkey fail\n");
+        certs = recv_cert(sock);
+        if (certs.size() != 2) { // our implementation uses excatly 2 cert
+            throw runtime_error("recv certificate fail\n");
+        }
+
+        server_static_pub = verify_incoming(global_trusted_store_ptr.get(), certs);
+        if (!server_static_pub) throw runtime_error("verify_incoming fail\n");
+
+        server_pub = recv_and_verify_signed_key(sock, server_static_pub);
 
         // 6) derive shared secret and AES key
         vector<unsigned char> secret = derive_shared_secret(client_key, server_pub);
+        if (secret.size() <= 0) throw runtime_error("derive_shared_secret fail");
+
         vector<unsigned char> salt(32, 0); // all zeros for first handshake
-        //aes_key = sha256(secret); // 32 bytes
-        //aes_key = hkdf_extract_and_expand(salt, secret, "TLS handshake key", 32);
-        
         vector<unsigned char> server_iv  = hkdf_extract_and_expand(salt, secret, HKDF_SERVER_VI_LABEL, GCM_IV_LEN);
         vector<unsigned char> client_iv  = hkdf_extract_and_expand(salt, secret, HKDF_CLIENT_VI_LABEL, GCM_IV_LEN);
         vector<unsigned char> server_key = hkdf_extract_and_expand(salt, secret, HKDF_SERVER_KEY_LABEL, 32);
         vector<unsigned char> client_key = hkdf_extract_and_expand(salt, secret, HKDF_CLIENT_KEY_LABEL, 32);
-        cout << "[Client] server key: " << server_key << endl;
-        cout << "[Client] client key: " << client_key << endl;
 
         // 7) send READY encrypted
-        vector<unsigned char> tag, cipher, expected_iv, write_iv;
-        string send_msg, recv_msg;
-        uint64_t server_seq = 0, client_seq = 0;
-        
         send_msg = "READY";
-        write_iv = make_record_iv(client_iv, client_seq++);
-        if (!aes_gcm_encrypt(client_key, send_msg, cipher, write_iv, tag)) throw runtime_error("encrypt READY fail");
-        if (!send_gcm_packet(sock, tag, cipher)) throw runtime_error("send READY fail");
+        if (!aes_gcm_encrypt_send(sock, send_msg, client_key, client_iv, client_seq)) throw runtime_error("encrypt_send fail");
         cout << "[Client] client sends: " << send_msg << endl;
 
         // 10) receive OK encrypted
-        expected_iv = make_record_iv(server_iv, server_seq++);
-        if (!recv_gcm_packet(sock, tag, cipher, GCM_TAG_LEN)) throw runtime_error("recv OK fail");
-        if (!aes_gcm_decrypt(server_key, cipher, expected_iv, tag, recv_msg)) throw runtime_error("decrypt OK fail");
+        recv_msg = "";
+        if (!aes_gcm_recv_decrypt(sock, recv_msg, server_key, server_iv, server_seq)) throw runtime_error("recv_decrypt fail");
         cout << "[Client] server says: " << recv_msg << endl;
 
-        expected_iv = make_record_iv(server_iv, server_seq++);
-        if (!recv_gcm_packet(sock, tag, cipher, GCM_TAG_LEN)) throw runtime_error("recv OK fail");
-        if (!aes_gcm_decrypt(server_key, cipher, expected_iv, tag, recv_msg)) throw runtime_error("decrypt OK fail");
+        recv_msg = "";
+        if (!aes_gcm_recv_decrypt(sock, recv_msg, server_key, server_iv, server_seq)) throw runtime_error("recv_decrypt fail");
         cout << "[Client] server says: " << recv_msg << endl;
 
         send_msg = "Got it.";
-        write_iv = make_record_iv(client_iv, client_seq++);
-        if (!aes_gcm_encrypt(client_key, send_msg, cipher, write_iv, tag)) throw runtime_error("encrypt READY fail");
-        if (!send_gcm_packet(sock, tag, cipher)) throw runtime_error("send READY fail");
+        if (!aes_gcm_encrypt_send(sock, send_msg, client_key, client_iv, client_seq)) throw runtime_error("encrypt_send fail");
         cout << "[Client] client sends: " << send_msg << endl;
 
     } catch (const runtime_error& e) {
         cerr << "[Client Error] " << e.what() << endl;
         EVP_PKEY_free(client_key);
         EVP_PKEY_free(server_pub);
+        EVP_PKEY_free(server_static_pub);
         close(sock);
         return 1;
     }
 
     EVP_PKEY_free(client_key);
     EVP_PKEY_free(server_pub);
+    EVP_PKEY_free(server_static_pub);
     close(sock);
     return 0;
 }
