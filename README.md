@@ -1,5 +1,5 @@
 # TLS-Handshake-Implementation
-* This project simulates TLS handshake using ECDHE key exchange and encrypt using AES-GCM afterward. Note that the CA certificate sent and verification part is completely skipped compared to the formal TLS handshake for simplicity. 
+* This project simulates X.509 certificate and TLS handshake using ECDHE key exchange and encrypt using AES-GCM afterward. 
 
 <h2> Testing Environment </h2>
 
@@ -103,8 +103,5 @@
 <h2> Security Notes</h2>
 This project is "educational only":
 
-* It skips certificate verification and CA trust chains.
-
 * It uses a fixed salt in HKDF (not randomized per session).
 
-These shortcuts are intentional to make the handshake logic clear, but would not be secure in production.
