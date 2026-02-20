@@ -22,11 +22,11 @@
   ```
 * compile server
   ```sh
-  g++ tls_server.cpp utility.cpp -lssl -lcrypto -o tls_server
+  g++ tls_server.cpp tls_impl.cpp -lssl -lcrypto -o tls_server
   ```
 * compile client
   ```sh
-  g++ tls_client.cpp utility.cpp -lssl -lcrypto -o tls_client
+  g++ tls_client.cpp tls_impl.cpp -lssl -lcrypto -o tls_client
   ```
 
 <h2> Testing </h2>
@@ -43,10 +43,13 @@
 * the result printing on the command prompt
   ```sh
   ~/TLS-Handshake-Implementation$ ./tls_server
+  Certificate request self-signature ok
+  subject=CN = MyIntermediateCA
+  Certificate request self-signature ok
+  subject=CN = localhost
   [Server] listening on port 5555
   [Server] client connected
-  [Server] server key:  {32 bytes, hex: de72c6ddcce071f6bf9f8a42be6ac18789216598fa3dafc2ffb00ac0a2e65f32}
-  [Server] client key:  {32 bytes, hex: 0a7f7f18019f7d33610fd3ba5358e5acbcf3f41cac171c7b3058d2441c47e2c2}
+  [Server] Sending certificates and signed ephemeral key. Total payload: 1009 bytes.
   [Server] client says: READY
   [Server] server sends: OK
   [Server] server sends: something interesting but only you can know
@@ -55,8 +58,8 @@
   ```sh
   ~/TLS-Handshake-Implementation$ ./tls_client
   [Client] connected to server
-  [Client] server key:  {32 bytes, hex: de72c6ddcce071f6bf9f8a42be6ac18789216598fa3dafc2ffb00ac0a2e65f32}
-  [Client] client key:  {32 bytes, hex: 0a7f7f18019f7d33610fd3ba5358e5acbcf3f41cac171c7b3058d2441c47e2c2}
+  send pub key: 95 bytes.
+  [Client] Verified signed ephemeral server public key.
   [Client] client sends: READY
   [Client] server says: OK
   [Client] server says: something interesting but only you can know

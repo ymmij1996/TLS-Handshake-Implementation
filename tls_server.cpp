@@ -46,7 +46,7 @@ int main() {
         addr.sin_addr.s_addr = INADDR_ANY;
         addr.sin_port = htons(PORT);
 
-        // 1) bind and listen
+        // bind and listen
         if (bind(server_fd, (struct sockaddr*)&addr, sizeof(addr)) < 0) throw runtime_error("bind fail");
         if (listen(server_fd, 1) < 0) throw runtime_error("listen fail");
 
@@ -55,24 +55,24 @@ int main() {
         if (client_fd < 0) throw runtime_error("accept fail");
         cout << "[Server] client connected\n";
 
-        // 3) receive client pubkey
+        // receive client pubkey
         client_pub = recv_pubkey(client_fd);
         if (!client_pub) throw runtime_error("failed recv client pubkey");
 
-        // 4) gen server key and send pubkey
-        ephemeral_key = generate_ec_key();
-        if (!ephemeral_key) throw runtime_error("keygen fail");
-
-        //if (!send_pubkey(client_fd, server_key)) throw runtime_error("failed send pubkey");
-        if (!send_cert_chain(client_fd, certs)) throw runtime_error("failed send certificates");
-
+        // load server private static key
         EVP_PKEY* static_priv_key = load_private_key("server.key");
         if (!static_priv_key) throw runtime_error("failed load private key");
 
-        if (!send_signed_pubkey(client_fd, ephemeral_key, static_priv_key)) throw runtime_error("failed send certificates");
+        // generate ephemeral public and private key
+        ephemeral_key = generate_ec_key();
+        if (!ephemeral_key) throw runtime_error("keygen fail");
+        
+        // send intermediate CA and server certificates and signed server ephemeral public key
+        if (!send_cert_chain_signed_pubkey(client_fd, certs, ephemeral_key, static_priv_key)) {
+            throw runtime_error("send_cert_chain_signed_pubkey failed");
+        }
 
-
-        // 6) derive shared secret & make AES key
+        // derive shared secret
         vector<unsigned char> secret = derive_shared_secret(ephemeral_key, client_pub);
         if (secret.size() <= 0) {
             throw runtime_error("derive_shared_secret fail");
@@ -84,12 +84,12 @@ int main() {
         vector<unsigned char> server_key = hkdf_extract_and_expand(salt, secret, HKDF_SERVER_KEY_LABEL, 32);
         vector<unsigned char> client_key = hkdf_extract_and_expand(salt, secret, HKDF_CLIENT_KEY_LABEL, 32);
 
-        // 8) receive READY encrypted
+        // receive READY encrypted
         recv_msg = "";
         if (!aes_gcm_recv_decrypt(client_fd, recv_msg, client_key, client_iv, client_seq)) throw runtime_error("decrypt_recv fail");
         cout << "[Server] client says: " << recv_msg << endl;
 
-        // 9) reply OK encrypted
+        // reply OK encrypted
         send_msg = "OK";
         if (!aes_gcm_encrypt_send(client_fd, send_msg, server_key, server_iv, server_seq)) throw runtime_error("encrypt_send fail");
         cout << "[Server] server sends: " << send_msg << endl;

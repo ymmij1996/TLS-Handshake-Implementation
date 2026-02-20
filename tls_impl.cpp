@@ -10,29 +10,114 @@
 
 using namespace std;
 
-// ostream& operator<<(ostream& os, const vec_print& vec_print) {
-//     os << vec_print.var <<" {" << vec_print.vec.size() << " bytes, hex: ";
-//     for (size_t i = 0; i < vec_print.vec.size(); ++i) {
-//         os << hex << setw(2) << setfill('0') << static_cast<int>(vec_print.vec[i]);
-//     }
-//     os << "}" << dec;
-//     return os;
-// }
-
 X509* load_cert(const string& filename) {
     BIO* bio = BIO_new_file(filename.c_str(), "r");
     if (!bio) return nullptr;
     
-    // PEM_read_bio_X509 converts the text-based .crt to an X509 object
     X509* cert = PEM_read_bio_X509(bio, nullptr, nullptr, nullptr);
     BIO_free(bio);
     return cert;
 }
 
+
+// ---------------------------------------
+// openssl req -in server.csr -noout -text
+//
+// Certificate Request:
+// Data:
+//     Version: 1 (0x0)
+//     Subject: CN = localhost
+//     Subject Public Key Info:
+//         Public Key Algorithm: id-ecPublicKey
+//             Public-Key: (256 bit)
+//             pub:
+//                 04:dc:f1:2e:04:d0:24:0f:d6:f1:13:fb:67:f1:4d:
+//                 48:43:7f:74:98:38:44:7d:6e:25:67:9f:73:20:d5:
+//                 25:87:7e:f3:92:bf:ee:13:16:b9:2f:14:aa:9e:dc:
+//                 8d:bb:1c:18:ee:35:7d:f0:7d:7e:6f:14:45:81:4f:
+//                 32:66:d7:58:d6
+//             ASN1 OID: prime256v1
+//             NIST CURVE: P-256
+//     Attributes:
+//         (none)
+//         Requested Extensions:
+// Signature Algorithm: ecdsa-with-SHA256
+// Signature Value:
+//     30:46:02:21:00:a4:23:08:11:dc:b7:34:b9:c4:6b:ec:6a:82:
+//     29:69:c4:04:3f:31:a7:cf:e0:fe:09:90:0a:5d:35:0c:01:54:
+//     55:02:21:00:95:97:eb:3b:e9:a5:64:9e:01:16:62:e0:6e:c8:
+//     cc:e3:1d:d8:cf:86:e5:23:3a:ba:e4:a3:60:a4:01:b6:5a:61
+
+// Block A: The Metadata (Name, Domain, Public Key).
+// Block B: The Algorithm ID (e.g., ecdsa-with-SHA256).
+// Block C: The Signature (r, s).
+
+// requester:
+// r = k * G (mod n)
+// s = (k^-1)(SHA-256(Metadata) + r * PrivateKey) (mod n)
+// k is random number, G, n are picked by EC Algorithm
+
+// CA verify:
+// u_1 = SHA-256(Metadata) * (s^-1) (mod n)
+// u_2 = r * (s^-1) (mod n)
+// P = (u_1 * G) + (u_2 * PublicKey) (mod n)
+// Check if the x-coordinate of P matches r
+
+// ---------------------------------------
+// openssl x509 -in root.crt -text -noout
+//
+// Certificate:
+//     Data:
+//         Version: 3 (0x2)
+//         Serial Number:
+//             42:48:db:74:63:81:4e:e3:b8:e8:72:fc:c1:53:d0:73:97:8a:15:55
+//         Signature Algorithm: ecdsa-with-SHA256
+//         Issuer: CN = MyRootCA
+//         Validity
+//             Not Before: Feb 18 02:58:14 2026 GMT
+//             Not After : Feb 16 02:58:14 2036 GMT
+//         Subject: CN = MyRootCA
+//         Subject Public Key Info:
+//             Public Key Algorithm: id-ecPublicKey
+//                 Public-Key: (256 bit)
+//                 pub:
+//                     04:78:f0:a3:47:a4:a4:bd:5e:35:ce:b8:61:81:78:
+//                     c6:9f:65:4e:e7:31:89:70:3a:39:28:6c:96:1e:7f:
+//                     ca:ff:9f:eb:a2:61:7e:ae:96:0c:b0:4f:e5:72:f8:
+//                     44:75:f7:3c:8a:30:48:5d:2e:d5:22:7b:e5:f9:62:
+//                     b3:dd:45:e1:a2
+//                 ASN1 OID: prime256v1
+//                 NIST CURVE: P-256
+//         X509v3 extensions:
+//             X509v3 Subject Key Identifier:
+//                 CC:48:47:BF:B2:56:FE:F4:50:4C:57:1E:47:B2:D9:36:2A:D4:97:2D
+//             X509v3 Authority Key Identifier:
+//                 CC:48:47:BF:B2:56:FE:F4:50:4C:57:1E:47:B2:D9:36:2A:D4:97:2D
+//             X509v3 Basic Constraints: critical
+//                 CA:TRUE
+//     Signature Algorithm: ecdsa-with-SHA256
+//     Signature Value:
+//         30:45:02:20:5c:ff:f6:4d:87:67:4b:cb:ce:ee:74:28:09:cf:
+//         4d:a8:75:ca:4b:c9:aa:93:08:74:97:68:57:8d:ef:09:ac:d6:
+//         02:21:00:ac:23:7d:51:4b:ae:4e:f3:2f:0f:95:c2:bc:4b:fc:
+//         59:57:02:9f:9d:24:36:6e:7c:4b:fe:14:aa:ad:58:15:62
+
+// TBS = NewMetadata, r, s, k are all new values from CA, PrivateKey and PublicKey are CA's
+// n, G depend on CA's algorithm decision
+
+// CA sign:
+// r = k * G (mod n)
+// s = (k^-1)(SHA-256(TBS) + r * PrivateKey) (mod n)
+// k is random number, G, n are picked by EC Algorithm
+
+// User(Browser) verify:
+// u_1 = SHA-256(TBS) * (s^-1) (mod n)
+// u_2 = r * (s^-1) (mod n)
+// P = (u_1 * G) + (u_2 * PublicKey) (mod n)
+
 void simulate_x509() {
     system("echo \"\nbasicConstraints=critical,CA:TRUE,pathlen:0\nkeyUsage=critical,keyCertSign,cRLSign\n\" > ca_ext.cnf");
     system("echo \"\nbasicConstraints=CA:FALSE\nkeyUsage=digitalSignature,keyEncipherment\nsubjectAltName=DNS:localhost\n\" > server_ext.cnf");
-
 
     system("openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 -out root.key");
 
@@ -51,7 +136,7 @@ void simulate_x509() {
            "-extfile ca_ext.cnf");
 
     system("openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 -out server.key");
-
+    
     system("openssl req -new -key server.key -out server.csr "
            "-subj \"/CN=localhost\"");
 
@@ -62,207 +147,24 @@ void simulate_x509() {
 
 
 EVP_PKEY* load_private_key(const string& filename) {
-    // 1. Open the file
     BIO* bio = BIO_new_file(filename.c_str(), "r");
     if (!bio) {
         cerr << "Error opening private key file: " << filename << endl;
         return nullptr;
     }
 
-    // 2. Read the private key
-    // The NULLs are for password callbacks (not needed since you used -nodes)
     EVP_PKEY* pkey = PEM_read_bio_PrivateKey(bio, nullptr, nullptr, nullptr);
     
-    // 3. Cleanup BIO
     BIO_free(bio);
 
     if (!pkey) {
         cerr << "Error reading private key from " << filename << endl;
-        // You can use ERR_print_errors_fp(stderr) here for detailed OpenSSL errors
+        // ERR_print_errors_fp(stderr)
         return nullptr;
     }
 
     return pkey;
 }
-
-bool send_cert_chain(int fd, const vector<X509*>& certs) {
-    vector<unsigned char> full_payload;
-    
-    for (X509* cert : certs) {
-        int len = i2d_X509(cert, nullptr); // the bytes len may wiggle 1-3 bytes
-        //cout << len << endl;
-        if (len <= 0) return false;
-
-        uint32_t netlen = htonl(len);
-        size_t offset = full_payload.size();
-        
-        // Append 4-byte length + DER data
-        full_payload.resize(offset + sizeof(uint32_t) + len);
-        memcpy(full_payload.data() + offset, &netlen, sizeof(uint32_t));
-        
-        unsigned char* p = full_payload.data() + offset + sizeof(uint32_t);
-        i2d_X509(cert, &p);
-    }
-
-    return send_all(fd, full_payload.data(), full_payload.size());
-}
-
-vector<X509*> recv_cert(int sock) {
-    vector<X509*> ret;
-    uint32_t netlen, len;
-    vector<unsigned char> buf;
-    const unsigned char* p;
-    X509* cert = nullptr;
-
-    if (!recv_all(sock, &netlen, sizeof(netlen))) return {};
-    len = ntohl(netlen);
-    if (len == 0 || len > BUF_SIZE) return {};
-    //cout << len << endl;
-    buf.resize(len);
-    if (!recv_all(sock, buf.data(), len)) return {};
-    p = buf.data();
-    cert = d2i_X509(nullptr, &p, buf.size());
-    if (!cert) return {};
-    ret.push_back(cert);
-
-    if (!recv_all(sock, &netlen, sizeof(netlen))) return {};
-    len = ntohl(netlen);
-    if (len == 0 || len > BUF_SIZE) return {};
-    //cout << len << endl;
-    buf.resize(len);
-    if (!recv_all(sock, buf.data(), len)) return {};
-    p = buf.data();
-    cert = d2i_X509(nullptr, &p, buf.size());
-    if (!cert) return {};
-    ret.push_back(cert);
-
-    return ret;
-}
-
-EVP_PKEY* verify_incoming(X509_STORE* global_trusted_store, vector<X509*> received_certs) {
-    X509* server_cert = received_certs[0];
-    X509* inter_cert = received_certs[1];
-    EVP_PKEY* pubkey = nullptr;
-
-    STACK_OF(X509)* untrusted_st = sk_X509_new_null();
-    sk_X509_push(untrusted_st, inter_cert); // Push the intermediate here
-
-    // 3. Now you can verify
-    X509_STORE_CTX* ctx = X509_STORE_CTX_new();
-    if (X509_STORE_CTX_init(ctx, global_trusted_store, server_cert, untrusted_st) != 1) {
-        throw runtime_error("CTX init failed");
-    }
-
-    if (X509_verify_cert(ctx) != 1) {
-        int err = X509_STORE_CTX_get_error(ctx);
-        X509_STORE_CTX_free(ctx);
-        sk_X509_free(untrusted_st);
-        throw runtime_error(string("cert verify failed: ") + X509_verify_cert_error_string(err));
-    }
-
-    pubkey = X509_get_pubkey(server_cert);
-    //pubkey = X509_get0_pubkey(server_cert);
-    X509_STORE_CTX_free(ctx);
-    sk_X509_free(untrusted_st);
-
-    return pubkey;
-}
-
-bool send_signed_pubkey(int fd, EVP_PKEY* ephemeral_pkey, EVP_PKEY* static_priv_key) {
-    int key_len = i2d_PUBKEY(ephemeral_pkey, nullptr);
-    if (key_len <= 0) return false;
-    vector<unsigned char> key_der(key_len);
-    unsigned char* p = key_der.data();
-    i2d_PUBKEY(ephemeral_pkey, &p);
-
-    // 2. Create the Signature of the DER key
-    // This proves: "I (the server) generated this specific ephemeral key"
-    unique_ptr<EVP_MD_CTX, decltype(&EVP_MD_CTX_free)> sign_ctx(EVP_MD_CTX_new(), EVP_MD_CTX_free);
-    if (EVP_DigestSignInit(sign_ctx.get(), nullptr, EVP_sha256(), nullptr, static_priv_key) <= 0) return false;
-
-    size_t sig_len = 0;
-    // this sig_len is assigned with max possible length of the signature
-    if (EVP_DigestSign(sign_ctx.get(), nullptr, &sig_len, key_der.data(), key_len) <= 0) return false;
-    vector<unsigned char> signature(sig_len);
-
-    // this sig_len value is changed to the real length of the signature after signing
-    if (EVP_DigestSign(sign_ctx.get(), signature.data(), &sig_len, key_der.data(), key_len) <= 0) return false;
-
-    // 3. Construct Payload: KeyLen(4) | KeyData | SigLen(4) | SigData
-    uint32_t net_key_len = htonl(key_len);
-    uint32_t net_sig_len = htonl(sig_len);
-
-    vector<unsigned char> payload;
-    payload.insert(payload.end(), (unsigned char*)&net_key_len, (unsigned char*)&net_key_len + 4);
-    payload.insert(payload.end(), key_der.begin(), key_der.begin() + key_len);
-    payload.insert(payload.end(), (unsigned char*)&net_sig_len, (unsigned char*)&net_sig_len + 4);
-    payload.insert(payload.end(), signature.begin(), signature.begin() + sig_len);
-
-    cout << "[Server] Sending signed ephemeral key. Total payload: " << payload.size() << " bytes." << endl;
-    return send_all(fd, payload.data(), payload.size());
-}
-
-EVP_PKEY* recv_and_verify_signed_key(int sock, EVP_PKEY* server_static_pub)
-{
-    uint32_t net_len = 0;
-    uint32_t key_len = 0;
-
-    // ---- 1. Read key length ----
-    if (!recv_all(sock, &net_len, sizeof(net_len)))
-        throw runtime_error("recv key len fail");
-
-    key_len = ntohl(net_len);
-    //cout << key_len << endl;
-    if (key_len == 0 || key_len > BUF_SIZE)
-        throw runtime_error("invalid key len");
-
-    // ---- 2. Read key DER ----
-    vector<unsigned char> key_der(key_len);
-    if (!recv_all(sock, key_der.data(), key_len))
-        throw runtime_error("recv key der fail");
-
-    // ---- 3. Read signature length ----
-    if (!recv_all(sock, &net_len, sizeof(net_len)))
-        throw runtime_error("recv sig len fail");
-
-    uint32_t sig_len = ntohl(net_len);
-    //cout << sig_len << endl;
-    if (sig_len == 0 || sig_len > BUF_SIZE)
-        throw runtime_error("invalid sig len");
-
-    // ---- 4. Read signature ----
-    vector<unsigned char> signature(sig_len);
-    if (!recv_all(sock, signature.data(), sig_len))
-        throw runtime_error("recv signature fail");
-
-    // ---- 5. Verify signature ----
-    auto ctx = unique_ptr<EVP_MD_CTX, decltype(&EVP_MD_CTX_free)>(
-        EVP_MD_CTX_new(), EVP_MD_CTX_free);
-
-    if (!ctx)
-        throw runtime_error("md ctx alloc fail");
-
-    if (EVP_DigestVerifyInit(ctx.get(), nullptr, EVP_sha256(),
-                             nullptr, server_static_pub) <= 0)
-        throw runtime_error("verify init fail");
-
-    int ok = EVP_DigestVerify(ctx.get(),
-                              signature.data(), sig_len,
-                              key_der.data(), key_len);
-
-    if (ok != 1) throw runtime_error("signature verification failed");
-
-    // ---- 6. Decode DER to EVP_PKEY ----
-    const unsigned char* p = key_der.data();
-    EVP_PKEY* ephemeral_pub = d2i_PUBKEY(nullptr, &p, key_len);
-    if (!ephemeral_pub)
-        throw runtime_error("d2i_PUBKEY fail");
-
-    cout << "[Client] Verified signed ephemeral key." << endl;
-
-    return ephemeral_pub; // caller owns
-}
-
 
 EVP_PKEY* recv_pubkey(int fd) {
     uint32_t netlen;
@@ -275,6 +177,154 @@ EVP_PKEY* recv_pubkey(int fd) {
     return d2i_PUBKEY(nullptr, &p, len);
 }
 
+bool send_cert_chain_signed_pubkey(int fd, const vector<X509*>& certs, EVP_PKEY* ephemeral_key, EVP_PKEY* static_priv_key) {
+    int key_len = i2d_PUBKEY(ephemeral_key, nullptr);
+    if (key_len <= 0) return false;
+
+    unique_ptr<EVP_MD_CTX, decltype(&EVP_MD_CTX_free)> sign_ctx(EVP_MD_CTX_new(), EVP_MD_CTX_free);
+    vector<unsigned char> key_der(key_len), signature, payload;
+    unsigned char* p;
+    uint32_t net_key_len, net_sig_len;
+    size_t sig_len = 0;
+    
+    for (X509* cert : certs) {
+        // certLen(4) | certData
+        int len = i2d_X509(cert, nullptr); // the bytes len may wiggle 1-3 bytes
+        if (len <= 0) return false;
+
+        uint32_t netlen = htonl(len);
+        size_t offset = payload.size();
+        
+        // Append 4-byte length + DER data
+        payload.resize(offset + sizeof(uint32_t) + len);
+        memcpy(payload.data() + offset, &netlen, sizeof(uint32_t));
+        
+        p = payload.data() + offset + sizeof(uint32_t);
+        i2d_X509(cert, &p);
+    }
+
+    p = key_der.data();
+    i2d_PUBKEY(ephemeral_key, &p);
+
+    // ECDSA: server sign ephemeral server key using server static private key
+    if (EVP_DigestSignInit(sign_ctx.get(), nullptr, EVP_sha256(), nullptr, static_priv_key) <= 0) return false;
+
+    // this sig_len is assigned with max possible length of the signature
+    if (EVP_DigestSign(sign_ctx.get(), nullptr, &sig_len, key_der.data(), key_len) <= 0) return false;
+    signature.resize(sig_len);
+
+    // this sig_len value is changed to the real length of the signature after signing
+    if (EVP_DigestSign(sign_ctx.get(), signature.data(), &sig_len, key_der.data(), key_len) <= 0) return false;
+
+    // KeyLen(4) | KeyData | SigLen(4) | SigData
+    net_key_len = htonl(key_len);
+    net_sig_len = htonl(sig_len);
+
+    payload.insert(payload.end(), (unsigned char*)&net_key_len, (unsigned char*)&net_key_len + 4);
+    payload.insert(payload.end(), key_der.begin(), key_der.begin() + key_len);
+    payload.insert(payload.end(), (unsigned char*)&net_sig_len, (unsigned char*)&net_sig_len + 4);
+    payload.insert(payload.end(), signature.begin(), signature.begin() + sig_len);
+
+    cout << "[Server] Sending certificates and signed ephemeral key. Total payload: " << payload.size() << " bytes." << endl;
+    return send_all(fd, payload.data(), payload.size());
+}
+
+EVP_PKEY* recv_verify_cert(int sock, X509_STORE* global_trusted_store) {
+    uint32_t netlen, len;
+    vector<unsigned char> buf;
+    const unsigned char* p;
+    X509 *server_cert, *inter_cert;
+    EVP_PKEY* pubkey = nullptr;
+    STACK_OF(X509)* untrusted_st = sk_X509_new_null();
+    unique_ptr<X509_STORE_CTX, decltype(&X509_STORE_CTX_free)> ctx_ptr(
+        X509_STORE_CTX_new(), 
+        X509_STORE_CTX_free
+    );
+
+    if (!recv_all(sock, &netlen, sizeof(netlen))) return {};
+    len = ntohl(netlen);
+    if (len == 0 || len > BUF_SIZE) return {};
+    buf.resize(len);
+    if (!recv_all(sock, buf.data(), len)) return {};
+    p = buf.data();
+    server_cert = d2i_X509(nullptr, &p, buf.size());
+    if (!server_cert) return {};
+
+    if (!recv_all(sock, &netlen, sizeof(netlen))) return {};
+    len = ntohl(netlen);
+    if (len == 0 || len > BUF_SIZE) return {};
+    buf.resize(len);
+    if (!recv_all(sock, buf.data(), len)) return {};
+    p = buf.data();
+    inter_cert = d2i_X509(nullptr, &p, buf.size());
+    if (!inter_cert) return {};
+
+    sk_X509_push(untrusted_st, inter_cert); // Push the intermediate here
+    
+    if (!ctx_ptr || X509_STORE_CTX_init(ctx_ptr.get(), global_trusted_store, server_cert, untrusted_st) != 1) {
+        throw runtime_error("CTX init failed");
+    }
+
+    // this verify all cert: root CA cert (client local installed), inter CA cert and server cert (get from server)
+    if (X509_verify_cert(ctx_ptr.get()) != 1) {
+        int err = X509_STORE_CTX_get_error(ctx_ptr.get());
+        sk_X509_free(untrusted_st);
+        throw runtime_error(string("cert verify failed: ") + X509_verify_cert_error_string(err));
+    }
+
+    pubkey = X509_get_pubkey(server_cert);
+    //pubkey = X509_get0_pubkey(server_cert);
+    sk_X509_free(untrusted_st);
+
+    return pubkey;
+}
+
+EVP_PKEY* recv_and_verify_signed_key(int sock, EVP_PKEY* server_static_pub)
+{
+    uint32_t net_len = 0, key_len = 0, sig_len;
+    vector<unsigned char> key_der, signature;
+    unique_ptr<EVP_MD_CTX, decltype(&EVP_MD_CTX_free)> ctx(EVP_MD_CTX_new(), EVP_MD_CTX_free);
+    const unsigned char* p;
+    EVP_PKEY* ephemeral_server_pub;
+
+    if (!recv_all(sock, &net_len, sizeof(net_len)))
+        throw runtime_error("recv key len fail");
+
+    key_len = ntohl(net_len);
+    if (key_len == 0 || key_len > BUF_SIZE)
+        throw runtime_error("invalid key len");
+
+    key_der.resize(key_len); // ephemeral server public key
+    if (!recv_all(sock, key_der.data(), key_len))
+        throw runtime_error("recv key der fail");
+
+    if (!recv_all(sock, &net_len, sizeof(net_len)))
+        throw runtime_error("recv sig len fail");
+
+    sig_len = ntohl(net_len);
+    if (sig_len == 0 || sig_len > BUF_SIZE)
+        throw runtime_error("invalid sig len");
+
+    signature.resize(sig_len);
+    if (!recv_all(sock, signature.data(), sig_len))
+        throw runtime_error("recv signature fail");
+
+    // ECDSA: verify server ephemeral public key using server static public key
+    if (!ctx || EVP_DigestVerifyInit(ctx.get(), nullptr, EVP_sha256(), nullptr, server_static_pub) <= 0) {
+        throw runtime_error("verify init fail");
+    }
+
+    if (EVP_DigestVerify(ctx.get(), signature.data(), sig_len, key_der.data(), key_len) != 1) {
+        throw runtime_error("signature verification failed");
+    }
+
+    p = key_der.data();
+    ephemeral_server_pub = d2i_PUBKEY(nullptr, &p, key_len);
+    if (!ephemeral_server_pub) throw runtime_error("d2i_PUBKEY ephemeral_server_pub fail");
+
+    cout << "[Client] Verified signed ephemeral server public key." << endl;
+    return ephemeral_server_pub; // caller owns
+}
 
 
 EVP_PKEY* generate_ec_key() {

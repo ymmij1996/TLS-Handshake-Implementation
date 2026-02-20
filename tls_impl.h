@@ -15,20 +15,20 @@ constexpr size_t GCM_TAG_LEN = 16;
 #define HKDF_SERVER_KEY_LABEL "tls13 server key"
 #define HKDF_CLIENT_KEY_LABEL "tls13 client key"
 
-X509* load_cert(const std::string& filename);
+// X.509
 void simulate_x509();
-EVP_PKEY* load_private_key(const std::string& filename);
-bool send_cert_chain(int fd, const std::vector<X509*>& certs);
-
-std::vector<X509*> recv_cert(int sock);
 X509* load_cert(const std::string& filename);
-bool send_pubkey(int fd, EVP_PKEY* pkey);
-bool send_signed_pubkey(int fd, EVP_PKEY* ephemeral_pkey, EVP_PKEY* static_priv_key);
-EVP_PKEY* recv_pubkey(int fd);
+EVP_PKEY* load_private_key(const std::string& filename);
 
-EVP_PKEY* verify_incoming(X509_STORE* global_trusted_store, std::vector<X509*> received_certs);
+bool send_pubkey(int fd, EVP_PKEY* pkey);
+
+EVP_PKEY* recv_pubkey(int fd);
+bool send_cert_chain_signed_pubkey(int fd, const std::vector<X509*>& certs, EVP_PKEY* ephemeral_pkey, EVP_PKEY* static_priv_key);
+
+EVP_PKEY* recv_verify_cert(int sock, X509_STORE* global_trusted_store);
 EVP_PKEY* recv_and_verify_signed_key(int sock, EVP_PKEY* server_static_pub);
 
+// ECDHE
 EVP_PKEY* generate_ec_key();
 std::vector<unsigned char> derive_shared_secret(EVP_PKEY* priv_key, EVP_PKEY* peer_pubkey);
 std::vector<unsigned char> sha256(const std::vector<unsigned char>& data);
@@ -39,6 +39,7 @@ std::vector<unsigned char> hkdf_extract_and_expand(
     size_t length
 );
 
+// AES GCM
 std::vector<unsigned char> make_record_iv(const std::vector<unsigned char>& base_iv, uint64_t seq_num);
 
 bool aes_gcm_encrypt_send(int sock, std::string& send_msg, std::vector<unsigned char>& key, std::vector<unsigned char>& base_iv, uint64_t& seq);
