@@ -3,6 +3,9 @@
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <iostream>
+#include <openssl/crypto.h>
+#include <limits>
+#include <vector>
 
 inline bool send_all(int fd, const void* data, size_t len) {
 #ifdef DEBUG
@@ -29,3 +32,29 @@ inline bool recv_all(int fd, void* data, size_t len) {
     }
     return true;
 }
+
+// overwrite std::allocator<T> of std::vector<T, std::allocator<T>>, default std::allocator<T> is lazy
+template <typename T>
+struct SecureAllocator {
+    using value_type = T; // must-have
+
+    SecureAllocator() noexcept {}
+    template <typename U> SecureAllocator(const SecureAllocator<U>&) noexcept {}
+
+    T* allocate(std::size_t n) { // must-have
+        if (n > std::numeric_limits<std::size_t>::max() / sizeof(T)) // make sure n * sizeof(T) is legit
+            throw std::bad_alloc();
+        
+        T* p = static_cast<T*>(OPENSSL_secure_malloc(n * sizeof(T)));
+        if (!p) throw std::bad_alloc();
+        return p;
+    }
+
+    void deallocate(T* p, std::size_t n) noexcept { // must-have
+        if (p) {
+            OPENSSL_secure_free(p); // no need for OPENSSL_cleanse
+        }
+    }
+};
+
+using SecureVector = std::vector<unsigned char, SecureAllocator<unsigned char>>;

@@ -1,5 +1,4 @@
 #include "tls_impl.h"
-#include "utility.h"
 #include <openssl/rand.h>
 #include <openssl/sha.h>
 #include <openssl/pem.h>
@@ -177,53 +176,68 @@ EVP_PKEY* recv_pubkey(int fd) {
     return d2i_PUBKEY(nullptr, &p, len);
 }
 
+// pkt format: [Len][Cert1][Len][Cert2][Len][EphemeralPubKey][Len][Sig]
 bool send_cert_chain_signed_pubkey(int fd, const vector<X509*>& certs, EVP_PKEY* ephemeral_key, EVP_PKEY* static_priv_key) {
     int key_len = i2d_PUBKEY(ephemeral_key, nullptr);
     if (key_len <= 0) return false;
 
     unique_ptr<EVP_MD_CTX, decltype(&EVP_MD_CTX_free)> sign_ctx(EVP_MD_CTX_new(), EVP_MD_CTX_free);
-    vector<unsigned char> key_der(key_len), signature, payload;
-    unsigned char* p;
-    uint32_t net_key_len, net_sig_len;
+    vector<int> cert_len(certs.size());
+    vector<unsigned char> ephemeral_key_der(key_len), signature, payload;
+    uint32_t net_key_len, net_sig_len, payload_len = 0;
     size_t sig_len = 0;
+    unsigned char* p;
+    int i = 0, offset = 0;
     
     for (X509* cert : certs) {
-        // certLen(4) | certData
         int len = i2d_X509(cert, nullptr); // the bytes len may wiggle 1-3 bytes
         if (len <= 0) return false;
-
-        uint32_t netlen = htonl(len);
-        size_t offset = payload.size();
-        
-        // Append 4-byte length + DER data
-        payload.resize(offset + sizeof(uint32_t) + len);
-        memcpy(payload.data() + offset, &netlen, sizeof(uint32_t));
-        
-        p = payload.data() + offset + sizeof(uint32_t);
-        i2d_X509(cert, &p);
+        cert_len[i] = len;
+        payload_len = payload_len + 4 + len;
+        ++i;
     }
 
-    p = key_der.data();
+    p = ephemeral_key_der.data();
     i2d_PUBKEY(ephemeral_key, &p);
 
     // ECDSA: server sign ephemeral server key using server static private key
     if (EVP_DigestSignInit(sign_ctx.get(), nullptr, EVP_sha256(), nullptr, static_priv_key) <= 0) return false;
 
     // this sig_len is assigned with max possible length of the signature
-    if (EVP_DigestSign(sign_ctx.get(), nullptr, &sig_len, key_der.data(), key_len) <= 0) return false;
+    if (EVP_DigestSign(sign_ctx.get(), nullptr, &sig_len, ephemeral_key_der.data(), key_len) <= 0) return false;
     signature.resize(sig_len);
 
     // this sig_len value is changed to the real length of the signature after signing
-    if (EVP_DigestSign(sign_ctx.get(), signature.data(), &sig_len, key_der.data(), key_len) <= 0) return false;
+    if (EVP_DigestSign(sign_ctx.get(), signature.data(), &sig_len, ephemeral_key_der.data(), key_len) <= 0) return false;
+
+    payload_len = payload_len + key_len + sig_len + 8;
+    payload.resize(payload_len);
+
+    i = 0;
+    for (X509* cert : certs) {
+        uint32_t netlen = htonl(cert_len[i]);
+        
+        // Append 4-byte length + DER data
+        memcpy(payload.data() + offset, &netlen, 4);
+        offset += 4;
+        p = payload.data() + offset;
+        i2d_X509(cert, &p);
+        offset += cert_len[i];
+        ++i;
+    }
 
     // KeyLen(4) | KeyData | SigLen(4) | SigData
     net_key_len = htonl(key_len);
     net_sig_len = htonl(sig_len);
 
-    payload.insert(payload.end(), (unsigned char*)&net_key_len, (unsigned char*)&net_key_len + 4);
-    payload.insert(payload.end(), key_der.begin(), key_der.begin() + key_len);
-    payload.insert(payload.end(), (unsigned char*)&net_sig_len, (unsigned char*)&net_sig_len + 4);
-    payload.insert(payload.end(), signature.begin(), signature.begin() + sig_len);
+    
+    memcpy(payload.data() + offset, &net_key_len, 4);
+    offset += 4;
+    memcpy(payload.data() + offset, ephemeral_key_der.data(), key_len);
+    offset += key_len;
+    memcpy(payload.data() + offset, &net_sig_len, 4);
+    offset += 4;
+    memcpy(payload.data() + offset, signature.data(), sig_len);
 
     cout << "[Server] Sending certificates and signed ephemeral key. Total payload: " << payload.size() << " bytes." << endl;
     return send_all(fd, payload.data(), payload.size());
@@ -361,9 +375,9 @@ bool send_pubkey(int fd, EVP_PKEY* pkey) {
     return send_all(fd, buf.data(), buf.size());
 }
 
-vector<unsigned char> derive_shared_secret(EVP_PKEY* priv_key, EVP_PKEY* peer_pubkey) {
+SecureVector derive_shared_secret(EVP_PKEY* priv_key, EVP_PKEY* peer_pubkey) {
     EVP_PKEY_CTX* ctx = EVP_PKEY_CTX_new(priv_key, nullptr); // context now know priv_key is Elliptic Curve
-    vector<unsigned char> secret;
+    SecureVector secret;
     size_t secret_len = 0;
 
     if (!ctx) return {};
@@ -391,9 +405,9 @@ vector<unsigned char> derive_shared_secret(EVP_PKEY* priv_key, EVP_PKEY* peer_pu
 // input_key_material: shared_secret from ECDHE
 // info: make sure client and server have different iv when use this to hash
 // length: desired output key length in bytes
-vector<unsigned char> hkdf_extract_and_expand(
-    const vector<unsigned char>& salt,
-    const vector<unsigned char>& input_key_material,
+SecureVector hkdf_extract_and_expand(
+    const SecureVector& salt,
+    const SecureVector& input_key_material,
     const string& info,
     size_t length
 ) {
@@ -402,7 +416,7 @@ vector<unsigned char> hkdf_extract_and_expand(
         EVP_PKEY_CTX_free
     );
     EVP_PKEY_CTX* pctx = pctx_ptr.get();
-    vector<unsigned char> out_key(length);
+    SecureVector out_key(length);
 
     // just filling pctx
     if (!pctx)
@@ -428,8 +442,12 @@ vector<unsigned char> hkdf_extract_and_expand(
             throw runtime_error("EVP_PKEY_CTX_add1_hkdf_info failed");
     }
 
-    // PRK = HMAC-SHA256(salt, input_key_material)
-    // out_key(32 bytes) = HMAC-SHA256(PRK, info + 0x01)
+    // HMAC(K, m) = SHA256((K XOR opad) || SHA256((K XOR ipad) || m))    
+    // PRK = HMAC-SHA256(salt, IKM)
+    // OKM(32 bytes) = HMAC-SHA256(PRK, info + 0x01)
+
+    // K: the salt or PRK, m: the input_key_material or info, ||: Concatenation.
+    // IKM: Input Key Material, PRK: Pseudorandom Key, OKM: Output Key Material
     if (EVP_PKEY_derive(pctx, out_key.data(), &length) <= 0)
         throw runtime_error("EVP_PKEY_derive failed");
 
@@ -437,8 +455,8 @@ vector<unsigned char> hkdf_extract_and_expand(
 }
 
 // Construct per-record IV: base_iv XOR seq_num
-vector<unsigned char> make_record_iv(const vector<unsigned char>& base_iv, uint64_t seq_num) {
-    vector<unsigned char> iv(base_iv);
+SecureVector make_record_iv(const SecureVector& base_iv, uint64_t seq_num) {
+    SecureVector iv(base_iv);
     // XOR seq_num into the last 8 bytes (4-11 bytes, network byte order)
     for (int i = 0; i < 8; i++) {
         iv[GCM_IV_LEN - 1 - i] ^= (seq_num >> (8 * i)) & 0xFF;
@@ -449,8 +467,8 @@ vector<unsigned char> make_record_iv(const vector<unsigned char>& base_iv, uint6
 bool aes_gcm_encrypt_send(
     int sock,
     string& plaintext,
-    vector<unsigned char>& key,     // 32 bytes
-    vector<unsigned char>& base_iv, // 12 bytes
+    SecureVector& key,     // 32 bytes
+    SecureVector& base_iv, // 12 bytes
     uint64_t& seq
 ) {
     unique_ptr<EVP_CIPHER_CTX, decltype(&EVP_CIPHER_CTX_free)> ctx_ptr(
@@ -458,19 +476,34 @@ bool aes_gcm_encrypt_send(
         EVP_CIPHER_CTX_free
     );
     EVP_CIPHER_CTX* ctx = ctx_ptr.get();
-    vector<unsigned char> iv, ciphertext, tag, record;
+    SecureVector iv, ciphertext, tag;
+    vector<unsigned char> record;
     int outlen = 0, ciphertext_len = 0;
     uint32_t payload_len;
     unsigned char header[5];
+    uint64_t be_seq = htobe64(seq); // Ensure big-endian for network consistency
 
     iv = make_record_iv(base_iv, seq);
+
+    payload_len = (uint32_t)(plaintext.size() + GCM_TAG_LEN);
+    if (payload_len > 0xFFFF) return false;
+
+    header[0] = TLS_APPLICATION_DATA;
+    header[1] = (unsigned char)((TLS_VERSION >> 8) & 0xff);
+    header[2] = (unsigned char)(TLS_VERSION & 0xff);
+    header[3] = (unsigned char)((payload_len >> 8) & 0xff);
+    header[4] = (unsigned char)(payload_len & 0xff);
 
     if (!ctx) { return false; }
     if (EVP_EncryptInit_ex(ctx, EVP_aes_256_gcm(), NULL, NULL, NULL) != 1) { return false; }
     if (EVP_EncryptInit_ex(ctx, NULL, NULL, key.data(), iv.data()) != 1) { return false; }
 
-    // step 1: stream = AES_Key(IV + Counter), AES_Key is 32 bytes, Counter + 1 per 16 bytes of plaintext
-    // step 2: ciphertext = plaintext ^ stream, same bytes length for ciphertext and plaintext
+    // FEED AAD (Sequence Number + Header)
+    if (EVP_EncryptUpdate(ctx, NULL, &outlen, (unsigned char*)&be_seq, sizeof(be_seq)) != 1) return false;
+    if (EVP_EncryptUpdate(ctx, NULL, &outlen, header, sizeof(header)) != 1) return false;
+
+    // step 1: stream(16 bytes) = AES_256_Encrypt(AES_Key, [IV(96 bits)][Counter(32 bits)]), AES_Key is 32 bytes, Counter + 1 per 16 bytes of plaintext
+    // step 2: ciphertext = plaintext ^ stream, repeat for next 16 bytes
     ciphertext.resize(plaintext.size());
     if (EVP_EncryptUpdate(ctx, ciphertext.data(), &outlen, (const unsigned char*)plaintext.data(), plaintext.size()) != 1) { return false; }
     ciphertext_len = outlen;
@@ -484,15 +517,6 @@ bool aes_gcm_encrypt_send(
     tag.resize(GCM_TAG_LEN);
     if (EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_GCM_GET_TAG, 16, tag.data()) != 1) { return false; }
 
-    payload_len = (uint32_t)(ciphertext.size() + tag.size());
-    if (payload_len > 0xFFFF) return false; // TLS record length limit
-
-    header[0] = TLS_APPLICATION_DATA;
-    header[1] = (unsigned char)((TLS_VERSION >> 8) & 0xff);
-    header[2] = (unsigned char)(TLS_VERSION & 0xff);
-    header[3] = (unsigned char)((payload_len >> 8) & 0xff);
-    header[4] = (unsigned char)(payload_len & 0xff);
-
     record.insert(record.end(), header, header + sizeof(header));
     record.insert(record.end(), ciphertext.begin(), ciphertext.end());
     record.insert(record.end(), tag.begin(), tag.end());
@@ -503,10 +527,11 @@ bool aes_gcm_encrypt_send(
 bool aes_gcm_recv_decrypt(
     int sock,
     string& recv_msg,
-    vector<unsigned char>& key,     // 32 bytes
-    vector<unsigned char>& base_iv, // 12 bytes
+    SecureVector& key,     // 32 bytes
+    SecureVector& base_iv, // 12 bytes
     uint64_t& seq
 ) {
+    bool success = true;
     uint8_t content_type;
     uint16_t version, payload_len;
     unique_ptr<EVP_CIPHER_CTX, decltype(&EVP_CIPHER_CTX_free)> ctx_ptr(
@@ -514,14 +539,16 @@ bool aes_gcm_recv_decrypt(
         EVP_CIPHER_CTX_free
     );
     EVP_CIPHER_CTX* ctx = ctx_ptr.get();
-    vector<unsigned char> payload, iv, ciphertext, tag, out;
-    int outlen = 0;
+    SecureVector payload, iv, ciphertext, tag, out;
+    int outlen = 0, aad_outlen;
     unsigned char header[5];
+    uint64_t be_seq = htobe64(seq);
 
     iv = make_record_iv(base_iv, seq);
-
+    if (!recv_all(sock, header, sizeof(header))) {
+        return false;
+    }
     if (!ctx) { throw runtime_error("EVP_CIPHER_CTX_new fail"); return false;}
-    if (!recv_all(sock, header, sizeof(header))) { throw runtime_error("header received fail"); return false;}
 
 #ifdef DEBUG
     printf("[DEBUG] Received Header: %02x %02x %02x %02x %02x\n", 
@@ -531,9 +558,11 @@ bool aes_gcm_recv_decrypt(
     content_type = header[0];
     version = (header[1] << 8) | header[2];
     payload_len = (header[3] << 8) | header[4];
-    if (content_type != TLS_APPLICATION_DATA) { throw runtime_error("content_type not match"); return false;}
-    if (version != TLS_VERSION) { throw runtime_error("version not match"); return false;}
-    if (payload_len < GCM_TAG_LEN) { throw runtime_error("payload_len not match"); return false;}
+    if (content_type != TLS_APPLICATION_DATA || version != TLS_VERSION || payload_len < GCM_TAG_LEN) {
+        throw runtime_error("verify header fail");
+        return false;
+    }
+    
     payload.resize(payload_len);
     if (!recv_all(sock, payload.data(), payload_len)) { throw runtime_error("payload received fail"); return false;}
 
@@ -545,6 +574,8 @@ bool aes_gcm_recv_decrypt(
 
     if (EVP_DecryptInit_ex(ctx, EVP_aes_256_gcm(), NULL, NULL, NULL) != 1) { throw runtime_error("EVP_DecryptInit_ex failed"); return false; }
     if (EVP_DecryptInit_ex(ctx, NULL, NULL, key.data(), iv.data()) != 1) { throw runtime_error("EVP_DecryptInit_ex failed"); return false; }
+    if (EVP_DecryptUpdate(ctx, NULL, &aad_outlen, (unsigned char*)&be_seq, sizeof(be_seq)) != 1) { throw runtime_error("EVP_DecryptUpdate failed"); return false; }
+    if (EVP_DecryptUpdate(ctx, NULL, &aad_outlen, header, sizeof(header)) != 1) { throw runtime_error("EVP_DecryptUpdate failed"); return false; }
     if (EVP_DecryptUpdate(ctx, out.data(), &outlen, ciphertext.data(), ciphertext.size()) != 1) { throw runtime_error("EVP_DecryptUpdate failed"); return false; }
     if (EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_GCM_SET_TAG, tag.size(), (void*)tag.data()) != 1) { throw runtime_error("EVP_CIPHER_CTX_ctrl failed"); return false; }
     if (EVP_DecryptFinal_ex(ctx, out.data() + outlen, &outlen) != 1) { throw runtime_error("EVP_DecryptFinal_ex failed"); return false; }

@@ -4,6 +4,7 @@
 #include <vector>
 #include <string>
 #include <iomanip>
+#include "utility.h"
 
 #define BUF_SIZE 8192
 constexpr unsigned char  TLS_APPLICATION_DATA = 23;   // 0x17
@@ -30,17 +31,14 @@ EVP_PKEY* recv_and_verify_signed_key(int sock, EVP_PKEY* server_static_pub);
 
 // ECDHE
 EVP_PKEY* generate_ec_key();
-std::vector<unsigned char> derive_shared_secret(EVP_PKEY* priv_key, EVP_PKEY* peer_pubkey);
-std::vector<unsigned char> sha256(const std::vector<unsigned char>& data);
-std::vector<unsigned char> hkdf_extract_and_expand(
-    const std::vector<unsigned char>& salt,
-    const std::vector<unsigned char>& input_key_material,
+SecureVector derive_shared_secret(EVP_PKEY* priv_key, EVP_PKEY* peer_pubkey);
+SecureVector hkdf_extract_and_expand(
+    const SecureVector& salt,
+    const SecureVector& input_key_material,
     const std::string& info,
     size_t length
 );
 
 // AES GCM
-std::vector<unsigned char> make_record_iv(const std::vector<unsigned char>& base_iv, uint64_t seq_num);
-
-bool aes_gcm_encrypt_send(int sock, std::string& send_msg, std::vector<unsigned char>& key, std::vector<unsigned char>& base_iv, uint64_t& seq);
-bool aes_gcm_recv_decrypt(int sock, std::string& recv_msg, std::vector<unsigned char>& key, std::vector<unsigned char>& base_iv, uint64_t& seq);
+bool aes_gcm_encrypt_send(int sock, std::string& send_msg, SecureVector& key, SecureVector& base_iv, uint64_t& seq);
+bool aes_gcm_recv_decrypt(int sock, std::string& recv_msg, SecureVector& key, SecureVector& base_iv, uint64_t& seq);

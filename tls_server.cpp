@@ -21,6 +21,10 @@ using namespace std;
 
 
 int main() {
+    if (CRYPTO_secure_malloc_init(65536, 4096) != 1) { // (capacity, chunk size)
+        cerr << "Could not initialize secure heap. Check permissions (ulimit -l)." << endl;
+        return 1;
+    }
     OpenSSL_add_all_algorithms();
 
     simulate_x509();
@@ -60,6 +64,7 @@ int main() {
         if (!client_pub) throw runtime_error("failed recv client pubkey");
 
         // load server private static key
+        // note that static public key is not calculated in runtime, it is embedded in server.cst
         EVP_PKEY* static_priv_key = load_private_key("server.key");
         if (!static_priv_key) throw runtime_error("failed load private key");
 
@@ -73,16 +78,16 @@ int main() {
         }
 
         // derive shared secret
-        vector<unsigned char> secret = derive_shared_secret(ephemeral_key, client_pub);
+        SecureVector secret = derive_shared_secret(ephemeral_key, client_pub);
         if (secret.size() <= 0) {
             throw runtime_error("derive_shared_secret fail");
         }
 
-        vector<unsigned char> salt(32, 0); // all zeros for first handshake
-        vector<unsigned char> server_iv  = hkdf_extract_and_expand(salt, secret, HKDF_SERVER_VI_LABEL, GCM_IV_LEN);
-        vector<unsigned char> client_iv  = hkdf_extract_and_expand(salt, secret, HKDF_CLIENT_VI_LABEL, GCM_IV_LEN);
-        vector<unsigned char> server_key = hkdf_extract_and_expand(salt, secret, HKDF_SERVER_KEY_LABEL, 32);
-        vector<unsigned char> client_key = hkdf_extract_and_expand(salt, secret, HKDF_CLIENT_KEY_LABEL, 32);
+        SecureVector salt(32, 0); // all zeros for first handshake
+        SecureVector server_iv  = hkdf_extract_and_expand(salt, secret, HKDF_SERVER_VI_LABEL, GCM_IV_LEN);
+        SecureVector client_iv  = hkdf_extract_and_expand(salt, secret, HKDF_CLIENT_VI_LABEL, GCM_IV_LEN);
+        SecureVector server_key = hkdf_extract_and_expand(salt, secret, HKDF_SERVER_KEY_LABEL, 32);
+        SecureVector client_key = hkdf_extract_and_expand(salt, secret, HKDF_CLIENT_KEY_LABEL, 32);
 
         // receive READY encrypted
         recv_msg = "";

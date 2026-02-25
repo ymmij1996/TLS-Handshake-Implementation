@@ -24,9 +24,13 @@ using namespace std;
 
 
 int main() {
+    if (CRYPTO_secure_malloc_init(65536, 4096) != 1) {
+        cerr << "Could not initialize secure heap. Check permissions (ulimit -l)." << endl;
+        return 1;
+    }
     OpenSSL_add_all_algorithms();
 
-    EVP_PKEY* client_key = NULL, *server_pub = NULL, *server_static_pub;
+    EVP_PKEY* client_ephemeral_key = NULL, *server_ephemeral_pub = NULL, *server_static_pub;
     int sock = -1;
     string send_msg, recv_msg;
     uint64_t server_seq = 0, client_seq = 0;
@@ -39,8 +43,8 @@ int main() {
 
     try {
         // generate client key
-        client_key = generate_ec_key();
-        if (!client_key) throw runtime_error("keygen fail");
+        client_ephemeral_key = generate_ec_key();
+        if (!client_ephemeral_key) throw runtime_error("keygen fail");
 
         // connect
         sock = socket(AF_INET, SOCK_STREAM, 0);
@@ -53,23 +57,23 @@ int main() {
         cout << "[Client] connected to server\n";
 
         // send client pubkey
-        if (!send_pubkey(sock, client_key)) throw runtime_error("send pubkey fail\n");
+        if (!send_pubkey(sock, client_ephemeral_key)) throw runtime_error("send pubkey fail\n");
 
         // receive certificates and verify
         server_static_pub = recv_verify_cert(sock, global_trusted_store_ptr.get());
         if (!server_static_pub) throw runtime_error("verify_incoming fail\n");
         // verify and decode server public key
-        server_pub = recv_and_verify_signed_key(sock, server_static_pub);
+        server_ephemeral_pub = recv_and_verify_signed_key(sock, server_static_pub);
 
         // derive shared secret and AES key
-        vector<unsigned char> secret = derive_shared_secret(client_key, server_pub);
+        SecureVector secret = derive_shared_secret(client_ephemeral_key, server_ephemeral_pub);
         if (secret.size() <= 0) throw runtime_error("derive_shared_secret fail");
 
-        vector<unsigned char> salt(32, 0); // all zeros for first handshake
-        vector<unsigned char> server_iv  = hkdf_extract_and_expand(salt, secret, HKDF_SERVER_VI_LABEL, GCM_IV_LEN);
-        vector<unsigned char> client_iv  = hkdf_extract_and_expand(salt, secret, HKDF_CLIENT_VI_LABEL, GCM_IV_LEN);
-        vector<unsigned char> server_key = hkdf_extract_and_expand(salt, secret, HKDF_SERVER_KEY_LABEL, 32);
-        vector<unsigned char> client_key = hkdf_extract_and_expand(salt, secret, HKDF_CLIENT_KEY_LABEL, 32);
+        SecureVector salt(32, 0); // all zeros for first handshake, salt is part of the input so still using SecureVector here
+        SecureVector server_iv  = hkdf_extract_and_expand(salt, secret, HKDF_SERVER_VI_LABEL, GCM_IV_LEN);
+        SecureVector client_iv  = hkdf_extract_and_expand(salt, secret, HKDF_CLIENT_VI_LABEL, GCM_IV_LEN);
+        SecureVector server_key = hkdf_extract_and_expand(salt, secret, HKDF_SERVER_KEY_LABEL, 32);
+        SecureVector client_key = hkdf_extract_and_expand(salt, secret, HKDF_CLIENT_KEY_LABEL, 32);
 
         // send READY encrypted
         send_msg = "READY";
@@ -91,15 +95,15 @@ int main() {
 
     } catch (const runtime_error& e) {
         cerr << "[Client Error] " << e.what() << endl;
-        EVP_PKEY_free(client_key);
-        EVP_PKEY_free(server_pub);
+        EVP_PKEY_free(client_ephemeral_key);
+        EVP_PKEY_free(server_ephemeral_pub);
         EVP_PKEY_free(server_static_pub);
         close(sock);
         return 1;
     }
 
-    EVP_PKEY_free(client_key);
-    EVP_PKEY_free(server_pub);
+    EVP_PKEY_free(client_ephemeral_key);
+    EVP_PKEY_free(server_ephemeral_pub);
     EVP_PKEY_free(server_static_pub);
     close(sock);
     return 0;
