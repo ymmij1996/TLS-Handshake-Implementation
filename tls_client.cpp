@@ -72,25 +72,25 @@ int main() {
         SecureVector salt(32, 0); // all zeros for first handshake, salt is part of the input so still using SecureVector here
         SecureVector server_iv  = hkdf_extract_and_expand(salt, secret, HKDF_SERVER_VI_LABEL, GCM_IV_LEN);
         SecureVector client_iv  = hkdf_extract_and_expand(salt, secret, HKDF_CLIENT_VI_LABEL, GCM_IV_LEN);
-        SecureVector server_key = hkdf_extract_and_expand(salt, secret, HKDF_SERVER_KEY_LABEL, 32);
-        SecureVector client_key = hkdf_extract_and_expand(salt, secret, HKDF_CLIENT_KEY_LABEL, 32);
+        SecureVector server_aes_key = hkdf_extract_and_expand(salt, secret, HKDF_SERVER_KEY_LABEL, 32);
+        SecureVector client_aes_key = hkdf_extract_and_expand(salt, secret, HKDF_CLIENT_KEY_LABEL, 32);
 
         // send READY encrypted
         send_msg = "READY";
-        if (!aes_gcm_encrypt_send(sock, send_msg, client_key, client_iv, client_seq)) throw runtime_error("encrypt_send fail");
+        if (!aes_gcm_encrypt_send(sock, send_msg, client_aes_key, client_iv, client_seq)) throw runtime_error("encrypt_send fail");
         cout << "[Client] client sends: " << send_msg << endl;
 
         // receive OK encrypted
         recv_msg = "";
-        if (!aes_gcm_recv_decrypt(sock, recv_msg, server_key, server_iv, server_seq)) throw runtime_error("recv_decrypt fail");
+        if (!aes_gcm_recv_decrypt(sock, recv_msg, server_aes_key, server_iv, server_seq)) throw runtime_error("recv_decrypt fail");
         cout << "[Client] server says: " << recv_msg << endl;
 
         recv_msg = "";
-        if (!aes_gcm_recv_decrypt(sock, recv_msg, server_key, server_iv, server_seq)) throw runtime_error("recv_decrypt fail");
+        if (!aes_gcm_recv_decrypt(sock, recv_msg, server_aes_key, server_iv, server_seq)) throw runtime_error("recv_decrypt fail");
         cout << "[Client] server says: " << recv_msg << endl;
 
         send_msg = "Got it.";
-        if (!aes_gcm_encrypt_send(sock, send_msg, client_key, client_iv, client_seq)) throw runtime_error("encrypt_send fail");
+        if (!aes_gcm_encrypt_send(sock, send_msg, client_aes_key, client_iv, client_seq)) throw runtime_error("encrypt_send fail");
         cout << "[Client] client sends: " << send_msg << endl;
 
     } catch (const runtime_error& e) {

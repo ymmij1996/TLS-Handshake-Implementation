@@ -37,6 +37,7 @@ int main() {
     EVP_PKEY* client_pub = NULL, *ephemeral_key = NULL;
     string send_msg, recv_msg;
     uint64_t server_seq = 0, client_seq = 0;
+    EVP_PKEY* static_priv_key = load_private_key("server.key");
 
     try {
         server_fd = socket(AF_INET, SOCK_STREAM, 0);
@@ -65,7 +66,6 @@ int main() {
 
         // load server private static key
         // note that static public key is not calculated in runtime, it is embedded in server.cst
-        EVP_PKEY* static_priv_key = load_private_key("server.key");
         if (!static_priv_key) throw runtime_error("failed load private key");
 
         // generate ephemeral public and private key
@@ -86,25 +86,25 @@ int main() {
         SecureVector salt(32, 0); // all zeros for first handshake
         SecureVector server_iv  = hkdf_extract_and_expand(salt, secret, HKDF_SERVER_VI_LABEL, GCM_IV_LEN);
         SecureVector client_iv  = hkdf_extract_and_expand(salt, secret, HKDF_CLIENT_VI_LABEL, GCM_IV_LEN);
-        SecureVector server_key = hkdf_extract_and_expand(salt, secret, HKDF_SERVER_KEY_LABEL, 32);
-        SecureVector client_key = hkdf_extract_and_expand(salt, secret, HKDF_CLIENT_KEY_LABEL, 32);
+        SecureVector server_aes_key = hkdf_extract_and_expand(salt, secret, HKDF_SERVER_KEY_LABEL, 32);
+        SecureVector client_aes_key = hkdf_extract_and_expand(salt, secret, HKDF_CLIENT_KEY_LABEL, 32);
 
         // receive READY encrypted
         recv_msg = "";
-        if (!aes_gcm_recv_decrypt(client_fd, recv_msg, client_key, client_iv, client_seq)) throw runtime_error("decrypt_recv fail");
+        if (!aes_gcm_recv_decrypt(client_fd, recv_msg, client_aes_key, client_iv, client_seq)) throw runtime_error("decrypt_recv fail");
         cout << "[Server] client says: " << recv_msg << endl;
 
         // reply OK encrypted
         send_msg = "OK";
-        if (!aes_gcm_encrypt_send(client_fd, send_msg, server_key, server_iv, server_seq)) throw runtime_error("encrypt_send fail");
+        if (!aes_gcm_encrypt_send(client_fd, send_msg, server_aes_key, server_iv, server_seq)) throw runtime_error("encrypt_send fail");
         cout << "[Server] server sends: " << send_msg << endl;
 
         send_msg = "something interesting but only you can know";
-        if (!aes_gcm_encrypt_send(client_fd, send_msg, server_key, server_iv, server_seq)) throw runtime_error("encrypt_send fail");
+        if (!aes_gcm_encrypt_send(client_fd, send_msg, server_aes_key, server_iv, server_seq)) throw runtime_error("encrypt_send fail");
         cout << "[Server] server sends: " << send_msg << endl;
 
         recv_msg = "";
-        if (!aes_gcm_recv_decrypt(client_fd, recv_msg, client_key, client_iv, client_seq)) throw runtime_error("decrypt_recv fail");
+        if (!aes_gcm_recv_decrypt(client_fd, recv_msg, client_aes_key, client_iv, client_seq)) throw runtime_error("decrypt_recv fail");
         cout << "[Server] client says: " << recv_msg << endl;
 
     } catch (const runtime_error& e) {
@@ -114,11 +114,13 @@ int main() {
         close(client_fd);
         EVP_PKEY_free(client_pub);
         EVP_PKEY_free(ephemeral_key);
+        EVP_PKEY_free(static_priv_key);
         return 1;
     }
     for (X509* c : certs) X509_free(c);
     EVP_PKEY_free(ephemeral_key);
     EVP_PKEY_free(client_pub);
+    EVP_PKEY_free(static_priv_key);
     close(client_fd);
     close(server_fd);
     return 0;
