@@ -107,7 +107,7 @@
   server:
   A = a * G (mod p), a is server private epheneral key, A is server public epheneral key
   client:
-  B = b * G (mod p), b is server private epheneral key, B is server public epheneral key
+  B = b * G (mod p), b is client private epheneral key, B is client public epheneral key
   share secret on both side (if attacker only knows A, B, G, Secret is almost impossible to compute):
   Secret = a * b * G = a * B = b * A (mod p)
   ```
@@ -166,3 +166,15 @@ This project is not production ready, it is still weak to:
 * Disable core dump to ensure secret is not dumped
 
 * And more...
+
+<h2> To be done </h2>
+
+* add server and client 32 bytes random
+
+* server should sign not only ephemeral key but also certificate etc.
+
+* server transcript finshed
+
+* client transcript, first AES-GCM packet should contain the transcript
+
+* use hkdf derived key start from secret_0 should be recurrsively fed into salt for seq number over 2^20
